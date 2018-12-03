@@ -10,17 +10,14 @@ const SCHEMATIZED_FIELDS = {
   '*': ['cx', 'co']         // Contexts: base64, nonbase64
 };
 
-const IGLU_RESOLVER_KEY = 'repositories';
 const IGLU_INSTANCE_ONLY_SCHEMA = 'iglu:com.snowplowanalytics.self-desc/instance-iglu-only/jsonschema/1-0-0';
-const IGLU_SCHEMA_KEY = 'schema';
-const IGLU_DATA_KEY = 'data';
 
 class IgluClient {
   static GetSchematizedFieldNames (eventType) {
     return SCHEMATIZED_FIELDS['*'].concat(SCHEMATIZED_FIELDS[eventType] === undefined ? [] : SCHEMATIZED_FIELDS[eventType]);
   }
 
-  constructor (config) {
+  constructor (config , Resolver ) {
     this.clearResolvers();
     this.addAllResolversFromConfigJson(config);
     this.prioritizeResolvers();
@@ -29,93 +26,74 @@ class IgluClient {
   clearResolvers () {
     this.resolvers = [];
   }
-
-  addResolverFromConfigJson (json) {
-    let config = json;
-    if (json.constructor === String) {
-      config = JSON.parse(json);
-    }
-
-    this.resolvers.push(new Resolver(config));
-  }
-
   addAllResolversFromConfigJson (json) {
-    if (json === undefined) {
+    let config;
+    if (typeof json === undefined) {
       return;
     }
 
-    let config = json;
-
-    if (json.constructor === String) {
+    if (typeof json === 'string') {
       config = JSON.parse(json);
+    } else {
+        config = Object.assign({}, json);
     }
 
-    let resolverConfigs = [];
-
-    if (config[IGLU_RESOLVER_KEY]) {
-      resolverConfigs = config[IGLU_RESOLVER_KEY];
-    } else if (config.constructor === Array) {
-      resolverConfigs = config;
+    if(config.data && config.shema) {
+        config = config.data;
     }
 
-    let retrieverFunction = function (key) { // `this` will be bound to the resolver instance
-      return Resolver.ServiceWorkerCachingRetriever(this.cacheConfig.cacheName, this.uri, key);
-    }
+    const resolverConfigs = config.repositories || Array.isArray(config) ? config : [];
+    this.resolvers = resolverConfigs.map(c => new Resolver(c));
 
-    for (let resovlerConfig of resolverConfigs) {
-      this.resolvers.push(new Resolver(resovlerConfig, retrieverFunction));
-    };
 
     this.prioritizeResolvers();
   }
 
   prioritizeResolvers () {
-    this.resolvers = this.resolvers.sort((a, b) => ((b.priority || -1) - (a.priority || -1)));
+    this.resolvers.sort((a, b) => ((b.priority || -1) - (a.priority || -1)));
   }
 
   validateObject (obj) {
-    var iglu = this;
-    return new Promise(function (resolve, reject) {
-      var instanceOnlySchema = iglu.getSchemaForKey(IGLU_INSTANCE_ONLY_SCHEMA);
+    const iglu = this;
+    return new Promise((resolve, reject) => {
+      const instanceOnlySchema = this.getSchemaForKey(IGLU_INSTANCE_ONLY_SCHEMA);
 
       instanceOnlySchema.then(
-        function (schema) {
-          var instanceOnlyResult = schema.validate(obj);
+         (schema) => {
+          const instanceOnlyResult = schema.validate(obj);
           if (!instanceOnlyResult.isValid) {
             instanceOnlyResult.stack = (new Error()).stack;
-            reject(instanceOnlyResult);
+            return reject(instanceOnlyResult);
           }
         },
         reject
-      ).then(function (result) {
-        var schemaName = obj[IGLU_SCHEMA_KEY];
-        var dataObj = obj[IGLU_DATA_KEY];
+      ).then(() => {
+        const schemaName = obj.schema;
+        const dataObj = obj.data;
 
-        if (schemaName === undefined) {
-          reject({object: obj, error: 'NoSchemaError', message: 'Could not find schema in object.', stack: (new Error()).stack});
+        if (schemaName) {
+          return reject({object: obj, error: 'NoSchemaError', message: 'Could not find schema in object.', stack: (new Error()).stack});
         }
 
-        let objSchema = iglu.getSchemaForKey(schemaName);
+        const objSchema = iglu.getSchemaForKey(schemaName);
 
         objSchema.catch(reject);
 
-        objSchema.then(function (schema) {
-          let validationResult = schema.validate(dataObj);
+        objSchema.then((schema) => {
+          const validationResult = schema.validate(dataObj);
           if (!validationResult.isValid) {
-            reject(validationResult);
-          } else {
-            let dataValidations = [];
-            if (dataObj.constructor === Array) {
-              dataValidations = dataObj.map((item) => iglu.validateObject(item));
-            } else {
-              if (dataObj[IGLU_SCHEMA_KEY]) {
-                dataValidations.push(iglu.validateObject(dataObj));
-              }
-            }
-
-            return Promise.all(dataValidations).then((results) => resolve(validationResult), reject);
+            return reject(validationResult);
           }
-        });
+          const dataValidations = [];
+
+          if (Array.isArray(dataObj)) {
+            dataValidations.concat(dataObj.map((item) => iglu.validateObject(item)));
+          }
+          if (dataObj.schema) {
+            dataValidations.push(iglu.validateObject(dataObj));
+          }
+            return Promise.all(dataValidations).then(() => resolve(validationResult), reject);
+          });
       });
     });
   }
@@ -126,18 +104,12 @@ class IgluClient {
   }
 
   getSchemaForKey (key) {
-    var myResolvers = this.resolvers;
+    const myResolvers = this.resolvers;
     return new Promise(function (resolve, reject) {
-      // Look for schema in cache and return.
-      if (false) {  // TODO
-        return // CACHED VERSION
-      } else {  // Else, look up the schema
-        var schemaMetadata = SchemaMetadata.FromSchemaKey(key);
-        // TODO: Could return null - handle error.
+        const schemaMetadata = SchemaMetadata.FromSchemaKey(key);
+        let resolver;
 
-        var resolver;
-
-        for (let i = 0; i < myResolvers.length; i++) {
+        for (let i = 0,len = myResolvers.length; i < len; i++) {
           if (myResolvers[i].resolves(schemaMetadata)) {
             resolver = myResolvers[i];
             break;
@@ -145,14 +117,17 @@ class IgluClient {
         }
 
         if (resolver) {
-          var schema = resolver.getSchemaForKey(key);
-          schema.then(resolve, reject);
+          const schema = resolver.getSchemaForKey(key);
+          if(schema) {
+              schema.then(resolve, reject);
+          }
+          return reject(Error ('No schema by key'));
         } else {
           console.log('Could not find resolver for key: ', key, myResolvers);
           reject(Error('No resolver found for: ' + key));
         }
-      }
-    })
+
+    });
   }
 }
 

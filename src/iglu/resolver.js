@@ -1,60 +1,28 @@
 'use strict';
-
 const Schema = require('./schema').Schema;
 
 const IGLU_SCHEMA_PREFIX = 'iglu:';
 const IGLU_URI_PATH_PREFIX = 'schemas';
 
-if(!window) {
-  if(!caches) {
-   const CacheStorage = require('fetch-cachestorage/caches');
-   const cahes = new CacheStorage();
-
-  }
-  if (!Request) {
-     const Request = require('node-fetch').Request;
-  }
-
-}
-
 class Resolver {
-  static ServiceWorkerCachingRetriever (cacheName, baseURI, key) {
-    const keyWithoutIgluPrefix = key.substring(IGLU_SCHEMA_PREFIX.length);
-    const url = [baseURI, IGLU_URI_PATH_PREFIX, keyWithoutIgluPrefix].join('/');
 
-    const request = new Request(url, {
-      method: 'GET',
-      mode: 'cors'
-    });
-
-    return caches.open(cacheName).then(function (cache) {
-      // console.log('Fetching schema from: ', url);
-      let add = cache.add(request).then(function () {
-        let match = cache.match(request); // *Should* always have a match unless somehow the cache is cleared since the last line...
-        return match;
-      });
-      return add;
-    });
-  }
-
-  constructor (config, retrieverFunction) {
-    let resolver = this;
+  constructor (config) {
+    const  resolver = this;
     this.name = config.name;
     this.vendorPrefixes = config.vendorPrefixes;
     this.priority = config.priority;
     this.cacheConfig = config.cacheConfig || {};
 
     if(!config.cacheConfig || !config.cacheConfig.cacheName) {
-        this.cacheConfig = ('c_' + config.name).replace(/\s/g, '_');
+        this.cacheConfig.cacheName = ('c_' + config.name).replace(/\s/g, '_');
     }
 
     if (config.connection && config.connection.http) {
       this.type = 'http';
       this.uri = config.connection.http.uri;
       this.path = config.connection.http.path;
-      this.retriever = function (key) {
-        return retrieverFunction.call(resolver, key);
-        // return Resolver.ServiceWorkerCachingRetriever(config.connection.http.uri, key);
+      this.retriever =  (key) => {
+
       };
     } else {
       // TODO: embedded?
@@ -66,28 +34,27 @@ class Resolver {
   }
 
   getSchemaForKey (key) { // => Promise resolving to schema object
-    var resolver = this;
-    return new Promise(function (resolve, reject) {
-      if (key.indexOf(IGLU_SCHEMA_PREFIX) !== 0) {
-        reject(Error('Key does not appear to be an iglu repository: ' + key));
+    const resolver = this;
+    return new Promise((resolve, reject) => {
+      if (key.startsWith(IGLU_SCHEMA_PREFIX)) {
+        return reject(Error('Key does not appear to be an iglu repository: ' + key));
       }
 
-      let schemaFetch = resolver.retrieve(key);
+      const schemaFetch = resolver.retrieve(key);
 
-      schemaFetch.then(function onSchemaFetchSuccess (response) {
-        let schemaJSON = response.json();
-        schemaJSON.then(function (obj) {
-          resolve(new Schema(obj));
-        });
+      if(!schemaFetch) {
+          return reject(Error('No resolver for a : ' + key));
+      }
 
-        schemaJSON.catch(function (error) {
-          reject(error);
-        });
-      });
+      schemaFetch.then((response) => {
+        const schemaJSON = response.json();
+        if(!schemaJSON) {
+            return reject(Error('No schema resolved for a : ' + key));
+        }
 
-      schemaFetch.catch(function onSchemaFetchError (error) {
-        reject(error);
-      });
+        schemaJSON.then(obj => resolve(new Schema(obj)))
+                  .catch(error => reject(error));
+      }).catch((error) => reject(error))
     });
   }
 
