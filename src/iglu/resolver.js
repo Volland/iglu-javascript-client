@@ -2,23 +2,17 @@
 const Schema = require('./schema').Schema;
 
 const IGLU_SCHEMA_PREFIX = 'iglu:';
-const IGLU_URI_PATH_PREFIX = 'schemas';
 
 class Resolver {
 
   constructor (config) {
-    const  resolver = this;
     this.name = config.name;
     this.vendorPrefixes = config.vendorPrefixes;
     this.priority = config.priority;
-    this.cacheConfig = config.cacheConfig || {};
 
-    if(!config.cacheConfig || !config.cacheConfig.cacheName) {
-        this.cacheConfig.cacheName = ('c_' + config.name).replace(/\s/g, '_');
-    }
+
 
     if (config.connection && config.connection.http) {
-      this.type = 'http';
       this.uri = config.connection.http.uri;
       this.path = config.connection.http.path;
       this.retriever =  (key) => {
@@ -29,8 +23,39 @@ class Resolver {
     }
   }
 
-  retrieve (key) {
-    return this.retriever(key);
+  clearResolvers () {
+    this.resolvers = [];
+  }
+  addAllResolversFromConfigJson (json) {
+    let config;
+    if (typeof json === undefined) {
+      return;
+    }
+
+    if (typeof json === 'string') {
+      config = JSON.parse(json);
+    } else {
+      config = Object.assign({}, json);
+    }
+
+    if(config.data && config.schema) {
+      // TODO : validate
+      config = config.data;
+    }
+
+    this.resolvers = config.repositories.map(c => new Resolver(c));
+
+
+    this.prioritizeResolvers();
+  }
+
+  prioritizeResolvers () {
+    this.resolvers.sort((a, b) => ((b.priority || -1) - (a.priority || -1)));
+  }
+
+  validateObjectAgainstSchema (obj, schema) {
+    let s = new Schema(schema);
+    return s.validate(obj);
   }
 
   getSchemaForKey (key) { // => Promise resolving to schema object
@@ -59,7 +84,7 @@ class Resolver {
   }
 
   resolves (schemaMetadata) { // => Boolean
-    return this.vendorPrefixes.some((p) => (schemaMetadata.vendor.indexOf(p) === 0));
+    return this.vendorPrefixes.some((p) => (schemaMetadata.vendor.indexOf(p) !== -1));
   }
 }
 
